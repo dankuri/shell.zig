@@ -22,24 +22,29 @@ pub fn main() !void {
             return stdout.print("\n", .{});
         };
 
-        var iter = std.mem.tokenizeScalar(u8, user_input, ' ');
-        const command = iter.next();
+        var arg_iter = std.mem.tokenizeScalar(u8, user_input, ' ');
+        const command = arg_iter.next();
 
         if (command) |c| {
             if (std.mem.eql(u8, c, "exit")) {
-                const exit_code = try std.fmt.parseInt(u8, iter.next() orelse "0", 10);
+                const exit_code = try std.fmt.parseInt(u8, arg_iter.next() orelse "0", 10);
                 std.process.exit(exit_code);
             } else if (std.mem.eql(u8, c, "echo")) {
-                while (iter.next()) |arg| {
+                while (arg_iter.next()) |arg| {
                     try stdout.print("{s} ", .{arg});
                 }
                 try stdout.print("\n", .{});
             } else if (std.mem.eql(u8, c, "type")) {
-                try handle_type(allocator, &iter);
+                try handle_type(allocator, &arg_iter);
             } else if (std.mem.eql(u8, c, "pwd")) {
                 const pwd = try std.process.getCwdAlloc(allocator);
                 defer allocator.free(pwd);
                 try stdout.print("{s}\n", .{pwd});
+            } else if (std.mem.eql(u8, c, "cd")) {
+                const path = arg_iter.next() orelse "";
+                std.process.changeCurDir(path) catch {
+                    try stdout.print("cd: {s}: No such file or directory\n", .{path});
+                };
             } else {
                 if (find_exec(allocator, c)) |full_path| {
                     defer allocator.free(full_path);
@@ -49,7 +54,7 @@ pub fn main() !void {
 
                     try argv.append(full_path);
 
-                    while (iter.next()) |arg| {
+                    while (arg_iter.next()) |arg| {
                         try argv.append(arg);
                     }
 
