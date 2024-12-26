@@ -1,5 +1,11 @@
 const std = @import("std");
 
+const Command = enum {
+    exit,
+    echo,
+    type,
+};
+
 pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
 
@@ -22,6 +28,14 @@ pub fn main() !void {
                     try stdout.print("{s} ", .{arg});
                 }
                 try stdout.print("\n", .{});
+            } else if (std.mem.eql(u8, c, "type")) {
+                while (iter.next()) |arg| {
+                    if (std.meta.stringToEnum(Command, arg) != null) {
+                        try stdout.print("{s} is a shell builtin\n", .{arg});
+                    } else {
+                        try stdout.print("{s}: not found\n", .{arg});
+                    }
+                }
             } else {
                 try stdout.print("{s}: command not found\n", .{c});
             }
