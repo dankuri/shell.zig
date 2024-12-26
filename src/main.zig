@@ -34,7 +34,23 @@ pub fn main() !void {
             } else if (std.mem.eql(u8, c, "type")) {
                 try handle_type(allocator, &iter);
             } else {
-                try stdout.print("{s}: command not found\n", .{c});
+                if (find_exec(allocator, c)) |full_path| {
+                    defer allocator.free(full_path);
+
+                    var argv = std.ArrayList([]const u8).init(allocator);
+                    defer argv.deinit();
+
+                    try argv.append(full_path);
+
+                    while (iter.next()) |arg| {
+                        try argv.append(arg);
+                    }
+
+                    var child = std.process.Child.init(argv.items, allocator);
+                    _ = try child.spawnAndWait();
+                } else {
+                    try stdout.print("{s}: command not found\n", .{c});
+                }
             }
         }
     }
