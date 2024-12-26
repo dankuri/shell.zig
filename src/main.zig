@@ -6,6 +6,7 @@ const Command = enum {
     exit,
     echo,
     type,
+    pwd,
 };
 
 pub fn main() !void {
@@ -17,7 +18,9 @@ pub fn main() !void {
 
         const stdin = std.io.getStdIn().reader();
         var buffer: [1024]u8 = undefined;
-        const user_input = try stdin.readUntilDelimiter(&buffer, '\n');
+        const user_input = try stdin.readUntilDelimiterOrEof(&buffer, '\n') orelse {
+            return stdout.print("\n", .{});
+        };
 
         var iter = std.mem.tokenizeScalar(u8, user_input, ' ');
         const command = iter.next();
@@ -33,6 +36,10 @@ pub fn main() !void {
                 try stdout.print("\n", .{});
             } else if (std.mem.eql(u8, c, "type")) {
                 try handle_type(allocator, &iter);
+            } else if (std.mem.eql(u8, c, "pwd")) {
+                const pwd = try std.process.getCwdAlloc(allocator);
+                defer allocator.free(pwd);
+                try stdout.print("{s}\n", .{pwd});
             } else {
                 if (find_exec(allocator, c)) |full_path| {
                     defer allocator.free(full_path);
