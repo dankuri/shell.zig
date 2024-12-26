@@ -41,10 +41,24 @@ pub fn main() !void {
                 defer allocator.free(pwd);
                 try stdout.print("{s}\n", .{pwd});
             } else if (std.mem.eql(u8, c, "cd")) {
-                const path = arg_iter.next() orelse "";
-                std.process.changeCurDir(path) catch {
-                    try stdout.print("cd: {s}: No such file or directory\n", .{path});
-                };
+                var path = arg_iter.next() orelse "~";
+
+                // this is a bit better than what is in the task, so it behaves more like a real shell
+                if (path[0] == '~') {
+                    const home = std.posix.getenv("HOME") orelse "";
+                    var list = try std.ArrayList(u8).initCapacity(allocator, home.len + path.len - 1);
+                    defer list.deinit();
+                    try list.appendSlice(home);
+                    try list.appendSlice(path[1..]);
+                    path = list.items;
+                    std.process.changeCurDir(path) catch {
+                        try stdout.print("cd: {s}: No such file or directory\n", .{path});
+                    };
+                } else {
+                    std.process.changeCurDir(path) catch {
+                        try stdout.print("cd: {s}: No such file or directory\n", .{path});
+                    };
+                }
             } else {
                 if (find_exec(allocator, c)) |full_path| {
                     defer allocator.free(full_path);
