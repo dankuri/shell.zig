@@ -17,6 +17,11 @@ pub fn main() !void {
             if (std.mem.eql(u8, c, "exit")) {
                 const exit_code = try std.fmt.parseInt(u8, iter.next() orelse "0", 10);
                 std.process.exit(exit_code);
+            } else if (std.mem.eql(u8, c, "echo")) {
+                while (iter.next()) |arg| {
+                    try stdout.print("{s} ", .{arg});
+                }
+                try stdout.print("\n", .{});
             } else {
                 try stdout.print("{s}: command not found\n", .{c});
             }
