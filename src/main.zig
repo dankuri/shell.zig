@@ -105,23 +105,33 @@ fn parse_args(allocator: std.mem.Allocator, input: []u8) ![][]u8 {
     var escape_next = false;
 
     for (input) |char| {
-        if (escape_next) {
-            try arg_builder.append(char);
-            escape_next = false;
-        } else if (in_single_quote) {
+        if (in_single_quote) {
             if (char == '\'') {
                 in_single_quote = false;
-                try args_list.append(try arg_builder.toOwnedSlice());
                 continue;
             }
             try arg_builder.append(char);
         } else if (in_double_quote) {
-            if (char == '"') {
+            if (escape_next) {
+                switch (char) {
+                    '\\', '$', '"' => {
+                        try arg_builder.append(char);
+                    },
+                    else => {
+                        try arg_builder.appendSlice(&[_]u8{ '\\', char });
+                    },
+                }
+                escape_next = false;
+            } else if (char == '"') {
                 in_double_quote = false;
-                try args_list.append(try arg_builder.toOwnedSlice());
-                continue;
+            } else if (char == '\\') {
+                escape_next = true;
+            } else {
+                try arg_builder.append(char);
             }
+        } else if (escape_next) {
             try arg_builder.append(char);
+            escape_next = false;
         } else {
             if (char == '\\') {
                 escape_next = true;
