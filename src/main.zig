@@ -102,9 +102,13 @@ fn parse_args(allocator: std.mem.Allocator, input: []u8) ![][]u8 {
 
     var in_single_quote = false;
     var in_double_quote = false;
+    var escape_next = false;
 
     for (input) |char| {
-        if (in_single_quote) {
+        if (escape_next) {
+            try arg_builder.append(char);
+            escape_next = false;
+        } else if (in_single_quote) {
             if (char == '\'') {
                 in_single_quote = false;
                 try args_list.append(try arg_builder.toOwnedSlice());
@@ -119,7 +123,9 @@ fn parse_args(allocator: std.mem.Allocator, input: []u8) ![][]u8 {
             }
             try arg_builder.append(char);
         } else {
-            if (char == '\'') {
+            if (char == '\\') {
+                escape_next = true;
+            } else if (char == '\'') {
                 in_single_quote = true;
             } else if (char == '"') {
                 in_double_quote = true;
