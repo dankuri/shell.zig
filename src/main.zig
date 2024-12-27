@@ -23,8 +23,8 @@ pub fn main() !void {
         };
 
         var args = parse_args(allocator, user_input) catch |err| {
-            if (err == error.UnclosedSingleQuote) {
-                try stdout.print("error: unclosed single quote\n", .{});
+            if (err == error.UnclosedQuote) {
+                try stdout.print("error: unclosed quote\n", .{});
             } else {
                 try stdout.print("error: {s}\n", .{@errorName(err)});
             }
@@ -98,8 +98,11 @@ pub fn main() !void {
 
 fn parse_args(allocator: std.mem.Allocator, input: []u8) ![][]u8 {
     var args_list = std.ArrayList([]u8).init(allocator);
-    var in_single_quote = false;
     var arg_builder = std.ArrayList(u8).init(allocator);
+
+    var in_single_quote = false;
+    var in_double_quote = false;
+
     for (input) |char| {
         if (in_single_quote) {
             if (char == '\'') {
@@ -108,9 +111,18 @@ fn parse_args(allocator: std.mem.Allocator, input: []u8) ![][]u8 {
                 continue;
             }
             try arg_builder.append(char);
+        } else if (in_double_quote) {
+            if (char == '"') {
+                in_double_quote = false;
+                try args_list.append(try arg_builder.toOwnedSlice());
+                continue;
+            }
+            try arg_builder.append(char);
         } else {
             if (char == '\'') {
                 in_single_quote = true;
+            } else if (char == '"') {
+                in_double_quote = true;
             } else if (char == ' ' and arg_builder.items.len != 0) {
                 try args_list.append(try arg_builder.toOwnedSlice());
             } else if (char != ' ') {
@@ -118,8 +130,8 @@ fn parse_args(allocator: std.mem.Allocator, input: []u8) ![][]u8 {
             }
         }
     }
-    if (in_single_quote) {
-        return error.UnclosedSingleQuote;
+    if (in_single_quote or in_double_quote) {
+        return error.UnclosedQuote;
     }
 
     if (arg_builder.items.len != 0) {
