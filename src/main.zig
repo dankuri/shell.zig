@@ -1,7 +1,5 @@
 const std = @import("std");
 
-const stdout = std.io.getStdOut().writer();
-
 const Command = enum {
     exit,
     echo,
@@ -12,17 +10,19 @@ const Command = enum {
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
+    const stdin = std.io.getStdIn().reader();
+    const stdout = std.io.getStdOut().writer();
+
+    var buffer: [1024]u8 = undefined;
 
     while (true) {
         try stdout.print("$ ", .{});
 
-        const stdin = std.io.getStdIn().reader();
-        var buffer: [1024]u8 = undefined;
         const user_input = try stdin.readUntilDelimiterOrEof(&buffer, '\n') orelse {
             return stdout.print("\n", .{});
         };
 
-        var args = parse_args(allocator, user_input) catch |err| {
+        const parsed_args = parse_args(allocator, user_input) catch |err| {
             if (err == error.UnclosedQuote) {
                 try stdout.print("error: unclosed quote\n", .{});
             } else {
@@ -31,12 +31,24 @@ pub fn main() !void {
             continue;
         };
 
+        var args = parsed_args.list;
+
         if (args.len == 0) {
             continue;
         }
 
         const command = args[0];
         args = args[1..];
+
+        var out = stdout.any();
+        if (parsed_args.redirect_stdout) |f| {
+            out = f.writer().any();
+        }
+        defer {
+            if (parsed_args.redirect_stdout) |f| {
+                f.close();
+            }
+        }
 
         if (std.mem.eql(u8, command, "exit")) {
             const exit_code = if (args.len != 0)
@@ -46,15 +58,15 @@ pub fn main() !void {
             std.process.exit(exit_code);
         } else if (std.mem.eql(u8, command, "echo")) {
             for (args) |arg| {
-                try stdout.print("{s} ", .{arg});
+                try out.print("{s} ", .{arg});
             }
-            try stdout.print("\n", .{});
+            try out.print("\n", .{});
         } else if (std.mem.eql(u8, command, "type")) {
-            try handle_type(allocator, args);
+            try handle_type(out, allocator, args);
         } else if (std.mem.eql(u8, command, "pwd")) {
             const pwd = try std.process.getCwdAlloc(allocator);
             defer allocator.free(pwd);
-            try stdout.print("{s}\n", .{pwd});
+            try out.print("{s}\n", .{pwd});
         } else if (std.mem.eql(u8, command, "cd")) {
             var path = if (args.len != 0) args[0] else "~";
 
@@ -67,11 +79,11 @@ pub fn main() !void {
                 try list.appendSlice(path[1..]);
                 path = list.items;
                 std.process.changeCurDir(path) catch {
-                    try stdout.print("cd: {s}: No such file or directory\n", .{path});
+                    try out.print("cd: {s}: No such file or directory\n", .{path});
                 };
             } else {
                 std.process.changeCurDir(path) catch {
-                    try stdout.print("cd: {s}: No such file or directory\n", .{path});
+                    try out.print("cd: {s}: No such file or directory\n", .{path});
                 };
             }
         } else {
@@ -81,28 +93,58 @@ pub fn main() !void {
                 var argv = std.ArrayList([]const u8).init(allocator);
                 defer argv.deinit();
 
-                try argv.append(full_path);
+                try argv.append(command);
 
-                for (args) |arg| {
-                    try argv.append(arg);
-                }
+                try argv.appendSlice(args);
 
                 var child = std.process.Child.init(argv.items, allocator);
-                _ = try child.spawnAndWait();
+                if (parsed_args.redirect_stdout != null) {
+                    child.stdout_behavior = .Pipe;
+                }
+
+                try child.spawn();
+                if (parsed_args.redirect_stdout != null) {
+                    try pipe(child.stdout.?.reader().any(), out);
+                }
+                _ = try child.wait();
             } else {
-                try stdout.print("{s}: command not found\n", .{command});
+                try out.print("{s}: command not found\n", .{command});
             }
         }
     }
 }
 
-fn parse_args(allocator: std.mem.Allocator, input: []u8) ![][]u8 {
+fn pipe(from: std.io.AnyReader, to: std.io.AnyWriter) !void {
+    var buffer: [4096]u8 = undefined;
+
+    while (true) {
+        const bytes_read = try from.read(&buffer);
+        if (bytes_read == 0) break;
+
+        var bytes_written: usize = 0;
+        while (bytes_written < bytes_read) {
+            bytes_written += try to.write(buffer[bytes_written..bytes_read]);
+        }
+    }
+}
+
+const Args = struct {
+    list: [][]u8 = undefined,
+    redirect_stdout: ?std.fs.File = null,
+};
+
+fn parse_args(allocator: std.mem.Allocator, input: []u8) !Args {
     var args_list = std.ArrayList([]u8).init(allocator);
     var arg_builder = std.ArrayList(u8).init(allocator);
+    errdefer arg_builder.deinit();
+    errdefer args_list.deinit();
 
     var in_single_quote = false;
     var in_double_quote = false;
     var escape_next = false;
+    var need_redirect_stdout_path = false;
+
+    var redirect_stdout: ?std.fs.File = null;
 
     for (input) |char| {
         if (in_single_quote) {
@@ -140,7 +182,15 @@ fn parse_args(allocator: std.mem.Allocator, input: []u8) ![][]u8 {
             } else if (char == '"') {
                 in_double_quote = true;
             } else if (char == ' ' and arg_builder.items.len != 0) {
-                try args_list.append(try arg_builder.toOwnedSlice());
+                const arg = try arg_builder.toOwnedSlice();
+                if (need_redirect_stdout_path) {
+                    redirect_stdout = try std.fs.cwd().createFile(arg, .{});
+                    need_redirect_stdout_path = false;
+                } else if (std.mem.eql(u8, arg, ">") or std.mem.eql(u8, arg, "1>")) {
+                    need_redirect_stdout_path = true;
+                } else {
+                    try args_list.append(arg);
+                }
             } else if (char != ' ') {
                 try arg_builder.append(char);
             }
@@ -151,22 +201,37 @@ fn parse_args(allocator: std.mem.Allocator, input: []u8) ![][]u8 {
     }
 
     if (arg_builder.items.len != 0) {
-        try args_list.append(try arg_builder.toOwnedSlice());
+        const arg = try arg_builder.toOwnedSlice();
+        if (need_redirect_stdout_path) {
+            redirect_stdout = try std.fs.cwd().createFile(arg, .{});
+            need_redirect_stdout_path = false;
+        } else if (std.mem.eql(u8, arg, ">") or std.mem.eql(u8, arg, "1>")) {
+            return error.StdoutRedirectNoPath;
+        } else {
+            try args_list.append(arg);
+        }
     }
 
-    return args_list.toOwnedSlice();
+    if (need_redirect_stdout_path) {
+        return error.StdoutRedirectNoPath;
+    }
+
+    return Args{
+        .list = try args_list.toOwnedSlice(),
+        .redirect_stdout = redirect_stdout,
+    };
 }
 
-fn handle_type(allocator: std.mem.Allocator, args: [][]u8) !void {
+fn handle_type(out: std.io.AnyWriter, allocator: std.mem.Allocator, args: [][]u8) !void {
     for (args) |arg| {
         if (std.meta.stringToEnum(Command, arg) != null) {
-            try stdout.print("{s} is a shell builtin\n", .{arg});
+            try out.print("{s} is a shell builtin\n", .{arg});
         } else {
             if (find_exec(allocator, arg)) |full_path| {
                 defer allocator.free(full_path);
-                try stdout.print("{s} is {s}\n", .{ arg, full_path });
+                try out.print("{s} is {s}\n", .{ arg, full_path });
             } else {
-                try stdout.print("{s}: not found\n", .{arg});
+                try out.print("{s}: not found\n", .{arg});
             }
         }
     }
@@ -201,6 +266,7 @@ fn find_exec(allocator: std.mem.Allocator, cmd: []const u8) ?[]const u8 {
         };
 
         list.appendSlice(full_path) catch {
+            list.deinit();
             continue;
         };
 
