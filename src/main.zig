@@ -7,20 +7,21 @@ const Command = enum {
     pwd,
 };
 
-pub fn main() !void {
+pub fn main() !u8 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
     const allocator = gpa.allocator();
     const stdin = std.io.getStdIn().reader();
     const stdout_writer = std.io.getStdOut().writer();
     const stderr_writer = std.io.getStdErr().writer();
 
-    var buffer: [1024]u8 = undefined;
+    var buffer: [4096]u8 = undefined;
 
     while (true) {
         try stdout_writer.print("$ ", .{});
 
         const user_input = try stdin.readUntilDelimiterOrEof(&buffer, '\n') orelse {
-            return stdout_writer.print("\n", .{});
+            break try stdout_writer.print("\n", .{});
         };
 
         const parsed_args = parse_args(allocator, user_input) catch |err| {
@@ -31,6 +32,12 @@ pub fn main() !void {
             }
             continue;
         };
+        defer {
+            for (parsed_args.list) |arg| {
+                allocator.free(arg);
+            }
+            allocator.free(parsed_args.list);
+        }
 
         var args = parsed_args.list;
 
@@ -66,7 +73,7 @@ pub fn main() !void {
                 try std.fmt.parseInt(u8, args[0], 10)
             else
                 0;
-            std.process.exit(exit_code);
+            return exit_code;
         } else if (std.mem.eql(u8, command, "echo")) {
             for (args) |arg| {
                 try stdout.print("{s} ", .{arg});
@@ -129,6 +136,7 @@ pub fn main() !void {
             }
         }
     }
+    return 0;
 }
 
 const Args = struct {
@@ -140,8 +148,13 @@ const Args = struct {
 fn parse_args(allocator: std.mem.Allocator, input: []u8) !Args {
     var args_list = std.ArrayList([]u8).init(allocator);
     var arg_builder = std.ArrayList(u8).init(allocator);
-    errdefer arg_builder.deinit();
-    errdefer args_list.deinit();
+    defer arg_builder.deinit();
+    errdefer {
+        for (args_list.items) |arg| {
+            allocator.free(arg);
+        }
+        args_list.deinit();
+    }
 
     var in_single_quote = false;
     var in_double_quote = false;
@@ -153,6 +166,9 @@ fn parse_args(allocator: std.mem.Allocator, input: []u8) !Args {
 
     var redirect_stdout: ?std.fs.File = null;
     var redirect_stderr: ?std.fs.File = null;
+
+    const redirect_out_directives = [_][]const u8{ ">", "1>", ">>", "1>>" };
+    const redirect_err_directives = [_][]const u8{ "2>", "2>>" };
 
     for (input) |char| {
         if (in_single_quote) {
@@ -198,6 +214,7 @@ fn parse_args(allocator: std.mem.Allocator, input: []u8) !Args {
                         append_stdout = false;
                     }
                     need_redirect_stdout_path = false;
+                    allocator.free(arg);
                 } else if (need_redirect_stderr_path) {
                     redirect_stderr = try std.fs.cwd().createFile(arg, .{ .truncate = !append_stderr });
                     if (append_stderr) {
@@ -206,18 +223,15 @@ fn parse_args(allocator: std.mem.Allocator, input: []u8) !Args {
                     }
                     need_redirect_stderr_path = false;
                     append_stderr = false;
-                } else if (std.mem.eql(u8, arg, ">") or std.mem.eql(u8, arg, "1>")) {
+                    allocator.free(arg);
+                } else if (contains_string(&redirect_out_directives, arg)) {
                     need_redirect_stdout_path = true;
-                    append_stdout = false;
-                } else if (std.mem.eql(u8, arg, ">>") or std.mem.eql(u8, arg, "1>>")) {
-                    need_redirect_stdout_path = true;
-                    append_stdout = true;
-                } else if (std.mem.eql(u8, arg, "2>")) {
+                    append_stdout = std.mem.indexOf(u8, arg, ">>") != null;
+                    allocator.free(arg);
+                } else if (contains_string(&redirect_err_directives, arg)) {
                     need_redirect_stderr_path = true;
-                    append_stderr = false;
-                } else if (std.mem.eql(u8, arg, "2>>")) {
-                    need_redirect_stderr_path = true;
-                    append_stderr = true;
+                    append_stderr = std.mem.indexOf(u8, arg, ">>") != null;
+                    allocator.free(arg);
                 } else {
                     try args_list.append(arg);
                 }
@@ -226,14 +240,13 @@ fn parse_args(allocator: std.mem.Allocator, input: []u8) !Args {
             }
         }
     }
+
     if (in_single_quote or in_double_quote) {
         return error.UnclosedQuote;
     }
 
-    const redirection_directives = [_][]const u8{ ">", "1>", "2>", ">>", "2>>" };
-
     if (arg_builder.items.len != 0) {
-        const arg = try arg_builder.toOwnedSlice();
+        const arg = arg_builder.items;
         if (need_redirect_stdout_path) {
             redirect_stdout = try std.fs.cwd().createFile(arg, .{ .truncate = !append_stdout });
             if (append_stdout) {
@@ -249,12 +262,12 @@ fn parse_args(allocator: std.mem.Allocator, input: []u8) !Args {
             }
             need_redirect_stderr_path = false;
         } else {
-            for (redirection_directives) |dir| {
+            for (redirect_out_directives) |dir| {
                 if (std.mem.eql(u8, dir, arg)) {
                     return error.RedirectNoPath;
                 }
             }
-            try args_list.append(arg);
+            try args_list.append(try arg_builder.toOwnedSlice());
         }
     }
 
@@ -323,4 +336,13 @@ fn find_exec(allocator: std.mem.Allocator, cmd: []const u8) ?[]const u8 {
         return ownedFullPath;
     }
     return null;
+}
+
+fn contains_string(haystack: []const []const u8, needle: []u8) bool {
+    for (haystack) |elem| {
+        if (std.mem.eql(u8, elem, needle)) {
+            return true;
+        }
+    }
+    return false;
 }
