@@ -118,29 +118,15 @@ pub fn main() !void {
 
                 try child.spawn();
                 if (parsed_args.redirect_stdout != null) {
-                    try pipe(child.stdout.?.reader().any(), stdout);
+                    try stdout.writeFile(child.stdout.?);
                 }
                 if (parsed_args.redirect_stderr != null) {
-                    try pipe(child.stderr.?.reader().any(), stderr);
+                    try stderr.writeFile(child.stderr.?);
                 }
                 _ = try child.wait();
             } else {
                 try stderr.print("{s}: command not found\n", .{command});
             }
-        }
-    }
-}
-
-fn pipe(from: std.io.AnyReader, to: std.io.AnyWriter) !void {
-    var buffer: [4096]u8 = undefined;
-
-    while (true) {
-        const bytes_read = try from.read(&buffer);
-        if (bytes_read == 0) break;
-
-        var bytes_written: usize = 0;
-        while (bytes_written < bytes_read) {
-            bytes_written += try to.write(buffer[bytes_written..bytes_read]);
         }
     }
 }
@@ -161,7 +147,9 @@ fn parse_args(allocator: std.mem.Allocator, input: []u8) !Args {
     var in_double_quote = false;
     var escape_next = false;
     var need_redirect_stdout_path = false;
+    var append_stdout = false;
     var need_redirect_stderr_path = false;
+    var append_stderr = false;
 
     var redirect_stdout: ?std.fs.File = null;
     var redirect_stderr: ?std.fs.File = null;
@@ -204,15 +192,32 @@ fn parse_args(allocator: std.mem.Allocator, input: []u8) !Args {
             } else if (char == ' ' and arg_builder.items.len != 0) {
                 const arg = try arg_builder.toOwnedSlice();
                 if (need_redirect_stdout_path) {
-                    redirect_stdout = try std.fs.cwd().createFile(arg, .{});
+                    redirect_stdout = try std.fs.cwd().createFile(arg, .{ .truncate = !append_stdout });
+                    if (append_stdout) {
+                        try redirect_stdout.?.seekFromEnd(0);
+                        append_stdout = false;
+                    }
                     need_redirect_stdout_path = false;
                 } else if (need_redirect_stderr_path) {
-                    redirect_stderr = try std.fs.cwd().createFile(arg, .{});
+                    redirect_stderr = try std.fs.cwd().createFile(arg, .{ .truncate = !append_stderr });
+                    if (append_stderr) {
+                        try redirect_stderr.?.seekFromEnd(0);
+                        append_stderr = false;
+                    }
                     need_redirect_stderr_path = false;
+                    append_stderr = false;
                 } else if (std.mem.eql(u8, arg, ">") or std.mem.eql(u8, arg, "1>")) {
                     need_redirect_stdout_path = true;
+                    append_stdout = false;
+                } else if (std.mem.eql(u8, arg, ">>") or std.mem.eql(u8, arg, "1>>")) {
+                    need_redirect_stdout_path = true;
+                    append_stdout = true;
                 } else if (std.mem.eql(u8, arg, "2>")) {
                     need_redirect_stderr_path = true;
+                    append_stderr = false;
+                } else if (std.mem.eql(u8, arg, "2>>")) {
+                    need_redirect_stderr_path = true;
+                    append_stderr = true;
                 } else {
                     try args_list.append(arg);
                 }
@@ -225,17 +230,30 @@ fn parse_args(allocator: std.mem.Allocator, input: []u8) !Args {
         return error.UnclosedQuote;
     }
 
+    const redirection_directives = [_][]const u8{ ">", "1>", "2>", ">>", "2>>" };
+
     if (arg_builder.items.len != 0) {
         const arg = try arg_builder.toOwnedSlice();
         if (need_redirect_stdout_path) {
-            redirect_stdout = try std.fs.cwd().createFile(arg, .{});
+            redirect_stdout = try std.fs.cwd().createFile(arg, .{ .truncate = !append_stdout });
+            if (append_stdout) {
+                try redirect_stdout.?.seekFromEnd(0);
+                append_stdout = false;
+            }
             need_redirect_stdout_path = false;
         } else if (need_redirect_stderr_path) {
-            redirect_stderr = try std.fs.cwd().createFile(arg, .{});
+            redirect_stderr = try std.fs.cwd().createFile(arg, .{ .truncate = !append_stderr });
+            if (append_stderr) {
+                try redirect_stderr.?.seekFromEnd(0);
+                append_stderr = false;
+            }
             need_redirect_stderr_path = false;
-        } else if (std.mem.eql(u8, arg, ">") or std.mem.eql(u8, arg, "1>") or std.mem.eql(u8, arg, "2>")) {
-            return error.RedirectNoPath;
         } else {
+            for (redirection_directives) |dir| {
+                if (std.mem.eql(u8, dir, arg)) {
+                    return error.RedirectNoPath;
+                }
+            }
             try args_list.append(arg);
         }
     }
